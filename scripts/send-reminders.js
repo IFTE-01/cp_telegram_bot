@@ -1,16 +1,25 @@
-const axios = require('axios');
+const CLIST_USERNAME = process.env.CLIST_USERNAME;
+const CLIST_API_KEY = process.env.CLIST_API_KEY;
+const token = process.env.TELEGRAM_BOT_TOKEN;
+const chatId = process.env.TELEGRAM_CHAT_ID;
 
-// Environment variables from GitHub Secrets
-const CLIST_USERNAME = process.env.CLIST_USERNAME || 'ifte_';
-const CLIST_API_KEY = process.env.CLIST_API_KEY || '633775f9b0697c2e405bcd4178ba504313313b14';
+console.log("🔍 Checking Environment Variables / Secrets...");
+let missing = false;
+if (!token) { console.error("❌ TELEGRAM_BOT_TOKEN is missing in Secrets!"); missing = true; }
+if (!chatId) { console.error("❌ TELEGRAM_CHAT_ID is missing in Secrets!"); missing = true; }
+if (!CLIST_USERNAME) { console.error("❌ CLIST_USERNAME is missing in Secrets!"); missing = true; }
+if (!CLIST_API_KEY) { console.error("❌ CLIST_API_KEY is missing in Secrets!"); missing = true; }
 
-// Exact formatDateTimeBD logic
+if (missing) {
+  process.exit(1);
+}
+
 function formatDateTimeBD(dt) {
   if (!dt) return "";
   const utcDate = new Date(dt);
   const bdDate = new Date(utcDate.getTime() + 6 * 60 * 60 * 1000);
-  let h = bdDate.getHours();
-  let m = bdDate.getMinutes();
+  let h = bdDate.getUTCHours();
+  let m = bdDate.getUTCMinutes();
   const ampm = h >= 12 ? "PM" : "AM";
 
   h = h % 12;
@@ -19,14 +28,13 @@ function formatDateTimeBD(dt) {
   m = m.toString().padStart(2, "0");
 
   const time12 = `${h}:${m} ${ampm}`;
-  const day = bdDate.getDate();
-  const month = bdDate.toLocaleString("en-US", { month: "short" });
-  const year = bdDate.getFullYear();
+  const day = bdDate.getUTCDate();
+  const month = bdDate.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const year = bdDate.getUTCFullYear();
 
   return `${day} ${month} ${year} - ${time12}`;
 }
 
-// Exact durationHM logic
 function durationHM(x) {
   if (!x) return "0:00";
   x /= 60;
@@ -39,19 +47,24 @@ function durationHM(x) {
 }
 
 async function run() {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-
-  if (!token || !chatId) {
-    console.error("❌ Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in GitHub Secrets.");
-    process.exit(1);
-  }
-
-  const url = `https://clist.by/api/v4/contest/?limit=800&username=${CLIST_USERNAME}&api_key=${CLIST_API_KEY}&order_by=-start`;
+  const url = `https://clist.by/api/v4/contest/?limit=800&username=${CLIST_USERNAME.trim()}&api_key=${CLIST_API_KEY.trim()}&order_by=-start`;
+  
+  console.log("🌐 Fetching contests from CList API v4...");
 
   try {
-    const res = await axios.get(url);
-    const contestsRaw = res.data.objects || [];
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+
+    if (!res.ok) {
+      throw new Error(`CList API returned HTTP status ${res.status}: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    const contestsRaw = data.objects || [];
+    console.log(`📊 Total contests returned from CList: ${contestsRaw.length}`);
 
     const nowMs = Date.now();
     const twentyFourHoursMs = 24 * 60 * 60 * 1000;
@@ -68,7 +81,6 @@ async function run() {
         (href.includes("codechef") && box.includes("starter")) ||
         href.includes("leetcode");
 
-      // Check if contest starts between 6:00 AM today and 6:00 AM tomorrow (next 24 hours)
       if (isTargetPlatform && startMs >= nowMs && startMs <= nowMs + twentyFourHoursMs) {
         let platform = "Other";
         if (href.includes("codeforces")) platform = "Codeforces";
@@ -94,21 +106,32 @@ ${contest.href}
 
 Good Luck! 🚀`;
 
-        await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-          chat_id: chatId,
-          text: message,
-          disable_web_page_preview: false
+        const tgUrl = `https://api.telegram.org/bot${token.trim()}/sendMessage`;
+        const tgRes = await fetch(tgUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId.trim(),
+            text: message,
+            disable_web_page_preview: false
+          })
         });
 
-        console.log(`✅ Sent reminder for: ${contest.event}`);
-        sentCount++;
+        const tgData = await tgRes.json();
+        if (tgRes.ok && tgData.ok) {
+          console.log(`✅ Sent reminder for: ${contest.event}`);
+          sentCount++;
+        } else {
+          console.error(`❌ Telegram Error for ${contest.event}:`, tgData.description || "Unknown error");
+        }
+
         await new Promise((r) => setTimeout(r, 400));
       }
     }
 
-    console.log(`🎉 Completed 6:00 AM check! Total reminders sent: ${sentCount}`);
+    console.log(`🎉 Completed! Total reminders sent to Telegram: ${sentCount}`);
   } catch (err) {
-    console.error("❌ Error running script:", err.message);
+    console.error("❌ Execution Error:", err.message);
     process.exit(1);
   }
 }
